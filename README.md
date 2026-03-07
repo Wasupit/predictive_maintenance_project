@@ -154,3 +154,6 @@ streamlit run app.py
 - **FP (False Positive)** - ложное срабатывание (предсказан отказ, но его нет)
 - **FN (False Negative)** - пропуск отказа (предсказана норма, но отказ есть)
 
+
+## Видео 
+https://drive.google.com/file/d/1Ab5OisGxfjGt415_Gnugd2h-rAQAIWzU/view?usp=drive_link
