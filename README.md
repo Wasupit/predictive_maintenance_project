@@ -156,4 +156,5 @@ streamlit run app.py
 
 
 ## Видео 
-https://drive.google.com/file/d/1Ab5OisGxfjGt415_Gnugd2h-rAQAIWzU/view?usp=drive_link
+https://drive.google.com/file/d/1Ab5OisGxfjGt415_Gnugd2h-rAQAIWzU/view?usp=sharing
+
