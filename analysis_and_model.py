@@ -15,38 +15,72 @@ from sklearn.metrics import (accuracy_score, confusion_matrix,
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import re
 import warnings
 
 warnings.filterwarnings('ignore')
 
-# Настройка страницы
 st.set_page_config(page_title="Анализ и модель", layout="wide")
+
+try:
+    from ucimlrepo import fetch_ucirepo
+
+    UCIMLREPO_AVAILABLE = True
+except ImportError:
+    UCIMLREPO_AVAILABLE = False
+    st.sidebar.warning("Для загрузки из UCI Repository установите: pip install ucimlrepo")
+
+
+def clean_feature_names(df):
+    rename_dict = {}
+    for col in df.columns:
+        if col == 'Machine failure':
+            continue
+        new_col = col.replace('[K]', '_K')
+        new_col = new_col.replace('[rpm]', '_rpm')
+        new_col = new_col.replace('[Nm]', '_Nm')
+        new_col = new_col.replace('[min]', '_min')
+        new_col = re.sub(r'[\[\]]', '', new_col)
+        new_col = new_col.replace(' ', '_')
+        new_col = re.sub(r'_+', '_', new_col)
+        rename_dict[col] = new_col
+    df = df.rename(columns=rename_dict)
+    return df
 
 
 def load_data(uploaded_file=None):
-    """Загрузка данных из файла или через ucimlrepo"""
     if uploaded_file is not None:
-        data = pd.read_csv(uploaded_file)
-    else:
         try:
-            from ucimlrepo import fetch_ucirepo
+            data = pd.read_csv(uploaded_file)
+            st.success('Данные успешно загружены из файла!')
+            return data
+        except Exception as e:
+            st.error(f"Ошибка при чтении файла: {e}")
+            return create_sample_data()
+    else:
+        if not UCIMLREPO_AVAILABLE:
+            st.error("Библиотека ucimlrepo не установлена.")
+            st.info("Установите: pip install ucimlrepo")
+            st.info("Или используйте Вариант 1: загрузка CSV файла")
+            return create_sample_data()
+        try:
             with st.spinner('Загрузка данных из UCI ML Repository...'):
                 dataset = fetch_ucirepo(id=601)
-                data = pd.concat([dataset.data.features, dataset.data.targets], axis=1)
-            st.success('Данные успешно загружены из репозитория!')
+                X = dataset.data.features
+                y = dataset.data.targets
+                data = pd.concat([X, y], axis=1)
+                st.success('Данные успешно загружены из репозитория!')
+                return data
         except Exception as e:
             st.error(f"Ошибка загрузки данных: {e}")
-            # Создаем демо-данные для тестирования
-            data = create_sample_data()
-            st.warning("Используются демо-данные для тестирования")
-    return data
+            st.info("Проверьте подключение к интернету")
+            st.info("Используйте Вариант 1: загрузка CSV файла")
+            return create_sample_data()
 
 
 def create_sample_data():
-    """Создание демо-данных для тестирования"""
     np.random.seed(42)
     n_samples = 1000
-
     data = pd.DataFrame({
         'Type': np.random.choice(['L', 'M', 'H'], n_samples),
         'Air temperature [K]': np.random.normal(300, 2, n_samples),
@@ -56,75 +90,71 @@ def create_sample_data():
         'Tool wear [min]': np.random.uniform(0, 250, n_samples),
         'Machine failure': np.random.choice([0, 1], n_samples, p=[0.97, 0.03])
     })
+    st.warning("Используются демо-данные для тестирования")
     return data
 
 
 def preprocess_data(data):
-    """Предобработка данных"""
-    # Копируем данные
     df = data.copy()
-
-    # Удаление ненужных столбцов
     columns_to_drop = ['UDI', 'Product ID', 'TWF', 'HDF', 'PWF', 'OSF', 'RNF']
     existing_columns = [col for col in columns_to_drop if col in df.columns]
-    df = df.drop(columns=existing_columns)
-
-    # Преобразование категориальной переменной Type
+    if existing_columns:
+        df = df.drop(columns=existing_columns)
+        st.info(f"Удалены столбцы: {', '.join(existing_columns)}")
     if 'Type' in df.columns:
         le = LabelEncoder()
         df['Type'] = le.fit_transform(df['Type'])
         st.session_state['label_encoder'] = le
-
-    # Проверка на пропущенные значения
+        st.info("Тип продукта преобразован в числовой формат")
     missing_values = df.isnull().sum()
-
-    return df, missing_values
+    if missing_values.sum() > 0:
+        st.warning(f"Найдены пропущенные значения: {missing_values[missing_values > 0]}")
+        for col in df.columns:
+            if df[col].isnull().any():
+                df[col].fillna(df[col].mean(), inplace=True)
+        st.info("Пропущенные значения заполнены")
+    else:
+        st.info("Пропущенные значения не обнаружены")
+    df = clean_feature_names(df)
+    return df
 
 
 def scale_features(X_train, X_test, numerical_features):
-    """Масштабирование числовых признаков"""
     scaler = StandardScaler()
     X_train_scaled = X_train.copy()
     X_test_scaled = X_test.copy()
-
     X_train_scaled[numerical_features] = scaler.fit_transform(X_train[numerical_features])
     X_test_scaled[numerical_features] = scaler.transform(X_test[numerical_features])
-
+    st.info("Числовые признаки масштабированы")
     return X_train_scaled, X_test_scaled, scaler
 
 
 def train_models(X_train, y_train):
-    """Обучение различных моделей"""
     models = {
         'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000),
         'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
-        'XGBoost': XGBClassifier(n_estimators=100, learning_rate=0.1, random_state=42),
-        'SVM': SVC(kernel='rbf', random_state=42, probability=True)
+        'XGBoost': XGBClassifier(n_estimators=100, learning_rate=0.1, random_state=42, validate_parameters=False),
+        'SVM': SVC(kernel='linear', random_state=42, probability=True)
     }
-
     trained_models = {}
     for name, model in models.items():
         with st.spinner(f'Обучение модели {name}...'):
-            model.fit(X_train, y_train)
-            trained_models[name] = model
-
+            try:
+                model.fit(X_train, y_train)
+                trained_models[name] = model
+            except Exception as e:
+                st.error(f"Ошибка при обучении модели {name}: {e}")
+                continue
     return trained_models
 
 
 def evaluate_model(model, X_test, y_test, model_name):
-    """Оценка модели"""
-    # Предсказания
     y_pred = model.predict(X_test)
     y_pred_proba = model.predict_proba(X_test)[:, 1]
-
-    # Метрики
     accuracy = accuracy_score(y_test, y_pred)
     conf_matrix = confusion_matrix(y_test, y_pred)
     roc_auc = roc_auc_score(y_test, y_pred_proba)
-
-    # Classification report в виде словаря
     report = classification_report(y_test, y_pred, output_dict=True)
-
     return {
         'name': model_name,
         'accuracy': accuracy,
@@ -137,9 +167,7 @@ def evaluate_model(model, X_test, y_test, model_name):
 
 
 def plot_roc_curves(results, y_test):
-    """Построение ROC-кривых для всех моделей"""
     fig = go.Figure()
-
     colors = ['blue', 'green', 'red', 'purple']
     for i, result in enumerate(results):
         fpr, tpr, _ = roc_curve(y_test, result['y_pred_proba'])
@@ -149,15 +177,12 @@ def plot_roc_curves(results, y_test):
             name=f"{result['name']} (AUC = {result['roc_auc']:.3f})",
             line=dict(color=colors[i], width=2)
         ))
-
-    # Добавляем диагональную линию
     fig.add_trace(go.Scatter(
         x=[0, 1], y=[0, 1],
         mode='lines',
         name='Random Guess',
         line=dict(color='gray', width=2, dash='dash')
     ))
-
     fig.update_layout(
         title='ROC-кривые для всех моделей',
         xaxis_title='False Positive Rate',
@@ -166,12 +191,10 @@ def plot_roc_curves(results, y_test):
         width=800,
         height=600
     )
-
     return fig
 
 
 def plot_confusion_matrix(conf_matrix, model_name):
-    """Построение матрицы ошибок"""
     fig = px.imshow(
         conf_matrix,
         text_auto=True,
@@ -185,22 +208,39 @@ def plot_confusion_matrix(conf_matrix, model_name):
 
 
 def plot_feature_importance(model, feature_names, model_name):
-    """Визуализация важности признаков"""
     if hasattr(model, 'feature_importances_'):
         importances = model.feature_importances_
         indices = np.argsort(importances)[::-1]
-
         fig = go.Figure(data=[
             go.Bar(
-                x=importances[indices][:10],
-                y=[feature_names[i] for i in indices[:10]],
-                orientation='h'
+                x=importances[indices],
+                y=[feature_names[i] for i in indices],
+                orientation='h',
+                marker_color='blue'
             )
         ])
-
         fig.update_layout(
             title=f'Важность признаков - {model_name}',
             xaxis_title='Важность',
+            yaxis_title='Признаки',
+            height=400
+        )
+        return fig
+    elif model_name in ['Logistic Regression', 'SVM'] and hasattr(model, 'coef_'):
+        importances = np.abs(model.coef_[0])
+        indices = np.argsort(importances)[::-1]
+        color = 'green' if model_name == 'Logistic Regression' else 'purple'
+        fig = go.Figure(data=[
+            go.Bar(
+                x=importances[indices],
+                y=[feature_names[i] for i in indices],
+                orientation='h',
+                marker_color=color
+            )
+        ])
+        fig.update_layout(
+            title=f'Важность признаков (коэффициенты) - {model_name}',
+            xaxis_title='|Коэффициент|',
             yaxis_title='Признаки',
             height=400
         )
@@ -212,13 +252,13 @@ def main():
     st.title("Анализ данных и обучение модели")
     st.markdown("---")
 
-    # Инициализация session state
     if 'models_trained' not in st.session_state:
         st.session_state['models_trained'] = False
     if 'data_loaded' not in st.session_state:
         st.session_state['data_loaded'] = False
+    if 'data_preprocessed' not in st.session_state:
+        st.session_state['data_preprocessed'] = False
 
-    # Создание вкладок
     tab1, tab2, tab3, tab4 = st.tabs([
         "Загрузка данных",
         "Предобработка",
@@ -228,7 +268,6 @@ def main():
 
     with tab1:
         st.header("Загрузка данных")
-
         col1, col2 = st.columns(2)
 
         with col1:
@@ -238,23 +277,23 @@ def main():
                 type="csv",
                 help="Загрузите файл predictive_maintenance.csv"
             )
-
             if uploaded_file is not None:
-                st.session_state['data'] = load_data(uploaded_file)
-                st.session_state['data_loaded'] = True
-                st.success("Данные успешно загружены из файла!")
+                with st.spinner('Загрузка файла...'):
+                    st.session_state['data'] = load_data(uploaded_file)
+                    st.session_state['data_loaded'] = True
 
         with col2:
             st.subheader("Вариант 2: Загрузка из UCI Repository")
+            if not UCIMLREPO_AVAILABLE:
+                st.warning("Библиотека ucimlrepo не установлена")
+                st.code("pip install ucimlrepo")
             if st.button("Загрузить данные из репозитория", use_container_width=True):
                 st.session_state['data'] = load_data()
                 st.session_state['data_loaded'] = True
 
-        # Отображение информации о данных
         if st.session_state['data_loaded']:
             st.markdown("---")
             st.subheader("Просмотр данных")
-
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Количество записей", st.session_state['data'].shape[0])
@@ -263,10 +302,7 @@ def main():
             with col3:
                 failure_rate = st.session_state['data']['Machine failure'].mean() * 100
                 st.metric("Доля отказов", f"{failure_rate:.2f}%")
-
             st.dataframe(st.session_state['data'].head(10), use_container_width=True)
-
-            # Статистика по данным
             with st.expander("Статистика по данным"):
                 st.dataframe(st.session_state['data'].describe(), use_container_width=True)
 
@@ -277,7 +313,6 @@ def main():
             st.warning("Сначала загрузите данные во вкладке 'Загрузка данных'")
             return
 
-        # Предобработка данных
         data = st.session_state['data']
 
         st.subheader("1. Информация о данных до предобработки")
@@ -300,9 +335,7 @@ def main():
             })
             st.dataframe(missing_df, use_container_width=True)
 
-        # Применение предобработки
         st.subheader("2. Применение предобработки")
-
         col1, col2 = st.columns(2)
 
         with col1:
@@ -315,27 +348,27 @@ def main():
 
         if st.button("Применить предобработку", type="primary", use_container_width=True):
             with st.spinner("Выполняется предобработка данных..."):
-                # Предобработка
-                df_processed, missing_values = preprocess_data(data)
-
-                # Сохраняем обработанные данные
+                df_processed = preprocess_data(data)
                 st.session_state['data_processed'] = df_processed
 
-                # Определяем числовые признаки для масштабирования
-                numerical_features = ['Air temperature [K]', 'Process temperature [K]',
-                                      'Rotational speed [rpm]', 'Torque [Nm]', 'Tool wear [min]']
+                numerical_features = ['Air_temperature_K', 'Process_temperature_K',
+                                      'Rotational_speed_rpm', 'Torque_Nm', 'Tool_wear_min']
                 existing_num_features = [f for f in numerical_features if f in df_processed.columns]
 
-                # Разделение на признаки и целевую переменную
+                if not existing_num_features:
+                    numerical_features_alt = ['Air temperature_K', 'Process temperature_K',
+                                              'Rotational speed_rpm', 'Torque_Nm', 'Tool wear_min']
+                    existing_num_features = [f for f in numerical_features_alt if f in df_processed.columns]
+
                 X = df_processed.drop(columns=['Machine failure'])
                 y = df_processed['Machine failure']
-
-                # Разделение на обучающую и тестовую выборки
                 X_train, X_test, y_train, y_test = train_test_split(
                     X, y, test_size=0.2, random_state=42, stratify=y
                 )
 
-                # Масштабирование
+                st.info(f"Обучающая выборка: {X_train.shape[0]} образцов")
+                st.info(f"Тестовая выборка: {X_test.shape[0]} образцов")
+
                 if scale_numerical and existing_num_features:
                     X_train_scaled, X_test_scaled, scaler = scale_features(
                         X_train, X_test, existing_num_features
@@ -351,38 +384,31 @@ def main():
                 st.session_state['y_test'] = y_test
                 st.session_state['feature_names'] = X.columns.tolist()
                 st.session_state['data_preprocessed'] = True
-
                 st.success("Предобработка данных завершена!")
 
-        # Отображение результата предобработки
         if 'data_preprocessed' in st.session_state and st.session_state['data_preprocessed']:
             st.markdown("---")
             st.subheader("3. Результат предобработки")
-
             col1, col2 = st.columns(2)
-
             with col1:
                 st.write("**Обучающая выборка:**")
                 st.write(f"Количество образцов: {len(st.session_state['X_train'])}")
                 st.write(f"Количество признаков: {st.session_state['X_train'].shape[1]}")
-
             with col2:
                 st.write("**Тестовая выборка:**")
                 st.write(f"Количество образцов: {len(st.session_state['X_test'])}")
                 st.write(f"Количество признаков: {st.session_state['X_test'].shape[1]}")
-
             st.write("**Первые строки обработанных данных:**")
             st.dataframe(st.session_state['X_train'].head(), use_container_width=True)
 
     with tab3:
         st.header("Обучение моделей")
 
-        if 'data_preprocessed' not in st.session_state:
+        if 'data_preprocessed' not in st.session_state or not st.session_state['data_preprocessed']:
             st.warning("Сначала выполните предобработку данных во вкладке 'Предобработка'")
             return
 
         st.subheader("Выбор моделей для обучения")
-
         col1, col2 = st.columns(2)
 
         with col1:
@@ -394,282 +420,221 @@ def main():
             use_svm = st.checkbox("SVM", value=False)
 
         if st.button("Обучить выбранные модели", type="primary", use_container_width=True):
-            # Собираем выбранные модели
             models_to_train = {}
             if use_lr:
                 models_to_train['Logistic Regression'] = LogisticRegression(random_state=42, max_iter=1000)
             if use_rf:
                 models_to_train['Random Forest'] = RandomForestClassifier(n_estimators=100, random_state=42)
             if use_xgb:
-                models_to_train['XGBoost'] = XGBClassifier(n_estimators=100, learning_rate=0.1, random_state=42)
+                models_to_train['XGBoost'] = XGBClassifier(n_estimators=100, learning_rate=0.1, random_state=42,
+                                                           validate_parameters=False)
             if use_svm:
-                models_to_train['SVM'] = SVC(kernel='rbf', random_state=42, probability=True)
+                models_to_train['SVM'] = SVC(kernel='linear', random_state=42, probability=True)
 
-            # Обучение моделей
+            if not models_to_train:
+                st.warning("Выберите хотя бы одну модель для обучения")
+                return
+
             trained_models = {}
             results = []
-
             progress_bar = st.progress(0)
+
             for i, (name, model) in enumerate(models_to_train.items()):
                 with st.spinner(f'Обучение модели {name}...'):
-                    model.fit(st.session_state['X_train'], st.session_state['y_train'])
-                    trained_models[name] = model
-
-                    # Оценка модели
-                    result = evaluate_model(
-                        model,
-                        st.session_state['X_test'],
-                        st.session_state['y_test'],
-                        name
-                    )
-                    results.append(result)
-
+                    try:
+                        model.fit(st.session_state['X_train'], st.session_state['y_train'])
+                        trained_models[name] = model
+                        result = evaluate_model(
+                            model,
+                            st.session_state['X_test'],
+                            st.session_state['y_test'],
+                            name
+                        )
+                        results.append(result)
+                    except Exception as e:
+                        st.error(f"Ошибка при обучении модели {name}: {e}")
                     progress_bar.progress((i + 1) / len(models_to_train))
 
-            st.session_state['trained_models'] = trained_models
-            st.session_state['results'] = results
-            st.session_state['models_trained'] = True
+            if trained_models:
+                st.session_state['trained_models'] = trained_models
+                st.session_state['results'] = results
+                st.session_state['models_trained'] = True
+                st.success(f"Обучено {len(trained_models)} моделей!")
 
-            st.success(f"Обучено {len(trained_models)} моделей!")
-
-            # Отображение результатов обучения
-            st.subheader("Результаты обучения")
-
-            results_df = pd.DataFrame([
-                {
-                    'Модель': r['name'],
-                    'Accuracy': f"{r['accuracy']:.4f}",
-                    'ROC-AUC': f"{r['roc_auc']:.4f}"
-                }
-                for r in results
-            ])
-
-            st.dataframe(results_df, use_container_width=True)
+                st.subheader("Результаты обучения")
+                results_df = pd.DataFrame([
+                    {
+                        'Модель': r['name'],
+                        'Accuracy': f"{r['accuracy']:.4f}",
+                        'ROC-AUC': f"{r['roc_auc']:.4f}"
+                    }
+                    for r in results
+                ])
+                st.dataframe(results_df, use_container_width=True)
+            else:
+                st.error("Не удалось обучить ни одной модели")
 
     with tab4:
         st.header("Оценка моделей и предсказания")
 
-        if 'models_trained' not in st.session_state:
+        if 'models_trained' not in st.session_state or not st.session_state['models_trained']:
             st.warning("Сначала обучите модели во вкладке 'Обучение модели'")
-            return
+        else:
+            eval_tab1, eval_tab2, eval_tab3 = st.tabs([
+                "Сравнение моделей",
+                "Детальный анализ",
+                "Предсказание на новых данных"
+            ])
 
-        # Создание подвкладок
-        eval_tab1, eval_tab2, eval_tab3 = st.tabs([
-            "Сравнение моделей",
-            "Детальный анализ",
-            "Предсказание на новых данных"
-        ])
+            with eval_tab1:
+                st.subheader("Сравнение всех моделей")
+                if 'results' in st.session_state and st.session_state['results']:
+                    fig_roc = plot_roc_curves(st.session_state['results'], st.session_state['y_test'])
+                    st.plotly_chart(fig_roc, use_container_width=True)
 
-        with eval_tab1:
-            st.subheader("Сравнение всех моделей")
-
-            # ROC-кривые
-            fig_roc = plot_roc_curves(
-                st.session_state['results'],
-                st.session_state['y_test']
-            )
-            st.plotly_chart(fig_roc, use_container_width=True)
-
-            # Сравнение метрик
-            st.subheader("Сравнение метрик")
-
-            comparison_data = []
-            for result in st.session_state['results']:
-                comparison_data.append({
-                    'Модель': result['name'],
-                    'Accuracy': result['accuracy'],
-                    'ROC-AUC': result['roc_auc'],
-                    'Precision (0)': result['report']['0']['precision'],
-                    'Recall (0)': result['report']['0']['recall'],
-                    'F1-score (0)': result['report']['0']['f1-score'],
-                    'Precision (1)': result['report']['1']['precision'],
-                    'Recall (1)': result['report']['1']['recall'],
-                    'F1-score (1)': result['report']['1']['f1-score']
-                })
-
-            comparison_df = pd.DataFrame(comparison_data)
-            st.dataframe(comparison_df.style.highlight_max(axis=0), use_container_width=True)
-
-        with eval_tab2:
-            st.subheader("Детальный анализ моделей")
-
-            # Выбор модели для детального анализа
-            model_names = [r['name'] for r in st.session_state['results']]
-            selected_model = st.selectbox("Выберите модель для анализа", model_names)
-
-            # Находим результаты выбранной модели
-            selected_result = next(
-                r for r in st.session_state['results']
-                if r['name'] == selected_model
-            )
-            selected_model_obj = st.session_state['trained_models'][selected_model]
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                # Матрица ошибок
-                fig_cm = plot_confusion_matrix(
-                    selected_result['conf_matrix'],
-                    selected_model
-                )
-                st.plotly_chart(fig_cm, use_container_width=True)
-
-            with col2:
-                # Важность признаков (для моделей, где это доступно)
-                fig_importance = plot_feature_importance(
-                    selected_model_obj,
-                    st.session_state['feature_names'],
-                    selected_model
-                )
-                if fig_importance:
-                    st.plotly_chart(fig_importance, use_container_width=True)
+                    st.subheader("Сравнение метрик")
+                    comparison_data = []
+                    for result in st.session_state['results']:
+                        comparison_data.append({
+                            'Модель': result['name'],
+                            'Accuracy': f"{result['accuracy']:.4f}",
+                            'ROC-AUC': f"{result['roc_auc']:.4f}",
+                            'Precision (0)': f"{result['report']['0']['precision']:.4f}",
+                            'Recall (0)': f"{result['report']['0']['recall']:.4f}",
+                            'F1-score (0)': f"{result['report']['0']['f1-score']:.4f}",
+                            'Precision (1)': f"{result['report']['1']['precision']:.4f}",
+                            'Recall (1)': f"{result['report']['1']['recall']:.4f}",
+                            'F1-score (1)': f"{result['report']['1']['f1-score']:.4f}"
+                        })
+                    comparison_df = pd.DataFrame(comparison_data)
+                    st.dataframe(comparison_df, use_container_width=True)
                 else:
-                    st.info(f"Модель {selected_model} не поддерживает визуализацию важности признаков")
+                    st.info("Нет данных для отображения. Обучите модели на вкладке 'Обучение модели'")
 
-            # Classification Report
-            st.subheader("Classification Report")
-            report_df = pd.DataFrame(selected_result['report']).transpose()
-            st.dataframe(report_df, use_container_width=True)
+            with eval_tab2:
+                st.subheader("Детальный анализ моделей")
+                if 'results' in st.session_state and st.session_state['results']:
+                    model_names = [r['name'] for r in st.session_state['results']]
+                    selected_model = st.selectbox("Выберите модель для анализа", model_names)
 
-        with eval_tab3:
-            st.subheader("Предсказание для новых данных")
-
-            st.info("Введите параметры оборудования для предсказания вероятности отказа")
-
-            # Создание формы для ввода данных
-            with st.form("prediction_form"):
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    product_type = st.selectbox(
-                        "Тип продукта",
-                        options=['L', 'M', 'H'],
-                        help="L - Low, M - Medium, H - High"
+                    selected_result = next(
+                        r for r in st.session_state['results']
+                        if r['name'] == selected_model
                     )
-                    air_temp = st.number_input(
-                        "Температура воздуха (K)",
-                        min_value=280.0,
-                        max_value=320.0,
-                        value=300.0,
-                        step=0.1
-                    )
-                    process_temp = st.number_input(
-                        "Температура процесса (K)",
-                        min_value=290.0,
-                        max_value=330.0,
-                        value=310.0,
-                        step=0.1
-                    )
+                    selected_model_obj = st.session_state['trained_models'][selected_model]
 
-                with col2:
-                    rotational_speed = st.number_input(
-                        "Скорость вращения (rpm)",
-                        min_value=1000,
-                        max_value=2000,
-                        value=1500,
-                        step=10
-                    )
-                    torque = st.number_input(
-                        "Крутящий момент (Nm)",
-                        min_value=10.0,
-                        max_value=70.0,
-                        value=40.0,
-                        step=0.1
-                    )
-                    tool_wear = st.number_input(
-                        "Износ инструмента (min)",
-                        min_value=0,
-                        max_value=300,
-                        value=150,
-                        step=1
-                    )
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        fig_cm = plot_confusion_matrix(selected_result['conf_matrix'], selected_model)
+                        st.plotly_chart(fig_cm, use_container_width=True)
+                    with col2:
+                        fig_importance = plot_feature_importance(
+                            selected_model_obj,
+                            st.session_state['feature_names'],
+                            selected_model
+                        )
+                        if fig_importance:
+                            st.plotly_chart(fig_importance, use_container_width=True)
+                        else:
+                            st.info(f"Для модели {selected_model} визуализация важности признаков не поддерживается")
 
-                # Выбор модели для предсказания
-                model_for_prediction = st.selectbox(
-                    "Выберите модель для предсказания",
-                    options=model_names,
-                    index=0
-                )
+                    st.subheader("Classification Report")
+                    report_df = pd.DataFrame(selected_result['report']).transpose()
+                    st.dataframe(report_df, use_container_width=True)
+                else:
+                    st.info("Нет данных для отображения. Обучите модели на вкладке 'Обучение модели'")
 
-                submit_button = st.form_submit_button(
-                    "Предсказать",
-                    type="primary",
-                    use_container_width=True
-                )
+            with eval_tab3:
+                st.subheader("Предсказание для новых данных")
+                if 'trained_models' in st.session_state and st.session_state['trained_models']:
+                    st.info("Введите параметры оборудования для предсказания вероятности отказа")
 
-            if submit_button:
-                # Создание DataFrame с входными данными
-                input_data = pd.DataFrame({
-                    'Type': [product_type],
-                    'Air temperature [K]': [air_temp],
-                    'Process temperature [K]': [process_temp],
-                    'Rotational speed [rpm]': [rotational_speed],
-                    'Torque [Nm]': [torque],
-                    'Tool wear [min]': [tool_wear]
-                })
+                    with st.form("prediction_form"):
+                        col1, col2 = st.columns(2)
 
-                # Преобразование типа продукта
-                if 'label_encoder' in st.session_state:
-                    input_data['Type'] = st.session_state['label_encoder'].transform(input_data['Type'])
+                        with col1:
+                            product_type = st.selectbox("Тип продукта", options=['L', 'M', 'H'])
+                            air_temp = st.number_input("Температура воздуха (K)", value=300.0, step=0.1)
+                            process_temp = st.number_input("Температура процесса (K)", value=310.0, step=0.1)
 
-                # Масштабирование (если применялось)
-                if 'scaler' in st.session_state:
-                    numerical_features = ['Air temperature [K]', 'Process temperature [K]',
-                                          'Rotational speed [rpm]', 'Torque [Nm]', 'Tool wear [min]']
-                    input_data[numerical_features] = st.session_state['scaler'].transform(
-                        input_data[numerical_features]
-                    )
+                        with col2:
+                            rotational_speed = st.number_input("Скорость вращения (rpm)", value=1500, step=10)
+                            torque = st.number_input("Крутящий момент (Nm)", value=40.0, step=0.1)
+                            tool_wear = st.number_input("Износ инструмента (min)", value=150, step=1)
 
-                # Получение модели
-                model = st.session_state['trained_models'][model_for_prediction]
+                        model_names = list(st.session_state['trained_models'].keys())
+                        model_for_prediction = st.selectbox("Выберите модель для предсказания", options=model_names)
 
-                # Предсказание
-                prediction = model.predict(input_data)[0]
-                prediction_proba = model.predict_proba(input_data)[0]
+                        submit_button = st.form_submit_button("Предсказать", type="primary", use_container_width=True)
 
-                # Отображение результатов
-                st.markdown("---")
-                st.subheader("Результат предсказания")
+                    if submit_button:
+                        input_dict = {}
 
-                col1, col2, col3 = st.columns(3)
+                        if 'label_encoder' in st.session_state:
+                            input_dict['Type'] = st.session_state['label_encoder'].transform([product_type])[0]
+                        else:
+                            input_dict['Type'] = 0 if product_type == 'L' else (1 if product_type == 'M' else 2)
 
-                with col1:
-                    if prediction == 0:
-                        st.success("Отказ НЕ произойдет")
-                    else:
-                        st.error("Отказ ПРОИЗОЙДЕТ")
+                        input_dict['Air_temperature_K'] = air_temp
+                        input_dict['Process_temperature_K'] = process_temp
+                        input_dict['Rotational_speed_rpm'] = rotational_speed
+                        input_dict['Torque_Nm'] = torque
+                        input_dict['Tool_wear_min'] = tool_wear
 
-                with col2:
-                    st.metric(
-                        "Вероятность отказа",
-                        f"{prediction_proba[1]:.2%}"
-                    )
+                        input_data = pd.DataFrame([input_dict])
 
-                with col3:
-                    st.metric(
-                        "Вероятность нормальной работы",
-                        f"{prediction_proba[0]:.2%}"
-                    )
+                        if st.session_state['feature_names']:
+                            available_cols = [col for col in st.session_state['feature_names']
+                                              if col in input_data.columns]
+                            if available_cols:
+                                input_data = input_data[available_cols]
 
-                # Визуализация вероятностей
-                fig = go.Figure(data=[
-                    go.Bar(
-                        x=['Нормальная работа', 'Отказ'],
-                        y=[prediction_proba[0], prediction_proba[1]],
-                        marker_color=['green', 'red'],
-                        text=[f'{prediction_proba[0]:.1%}', f'{prediction_proba[1]:.1%}'],
-                        textposition='auto',
-                    )
-                ])
+                        if 'scaler' in st.session_state:
+                            numerical_features = ['Air_temperature_K', 'Process_temperature_K',
+                                                  'Rotational_speed_rpm', 'Torque_Nm', 'Tool_wear_min']
+                            available_num_features = [f for f in numerical_features if f in input_data.columns]
+                            if available_num_features:
+                                input_data[available_num_features] = st.session_state['scaler'].transform(
+                                    input_data[available_num_features]
+                                )
 
-                fig.update_layout(
-                    title='Вероятности предсказания',
-                    yaxis_title='Вероятность',
-                    yaxis=dict(tickformat='.0%'),
-                    height=400
-                )
+                        model = st.session_state['trained_models'][model_for_prediction]
+                        prediction = model.predict(input_data)[0]
+                        prediction_proba = model.predict_proba(input_data)[0]
 
-                st.plotly_chart(fig, use_container_width=True)
+                        st.markdown("---")
+                        st.subheader("Результат предсказания")
+
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            if prediction == 0:
+                                st.success("Отказ НЕ произойдет")
+                            else:
+                                st.error("Отказ ПРОИЗОЙДЕТ")
+                        with col2:
+                            st.metric("Вероятность отказа", f"{prediction_proba[1]:.2%}")
+                        with col3:
+                            st.metric("Вероятность нормальной работы", f"{prediction_proba[0]:.2%}")
+
+                        fig = go.Figure(data=[
+                            go.Bar(
+                                x=['Нормальная работа', 'Отказ'],
+                                y=[prediction_proba[0], prediction_proba[1]],
+                                marker_color=['green', 'red'],
+                                text=[f'{prediction_proba[0]:.1%}', f'{prediction_proba[1]:.1%}'],
+                                textposition='auto',
+                            )
+                        ])
+                        fig.update_layout(
+                            title='Вероятности предсказания',
+                            yaxis_title='Вероятность',
+                            yaxis=dict(tickformat='.0%'),
+                            height=400,
+                            showlegend=False
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Нет обученных моделей. Обучите модели на вкладке 'Обучение модели'")
 
 
 if __name__ == "__main__":
